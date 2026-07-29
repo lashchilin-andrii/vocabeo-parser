@@ -3,6 +3,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from bs4 import BeautifulSoup
+from deep_translator import GoogleTranslator
 from playwright.sync_api import sync_playwright
 
 
@@ -22,6 +23,7 @@ class Entry:
     pronunciation: str | None = None
     plural: str | None = None
     translations: list[str] = field(default_factory=list)
+    translations_ru: list[str] = field(default_factory=list)
     conjugations: str | None = None
     sentences: list[Sentence] = field(default_factory=list)
 
@@ -33,6 +35,9 @@ class Entry:
         )
 
         facts = cls.extract_facts(soup)
+        english_translations = cls.extract_translations(soup)
+        russian_translations = cls.translate_to_russian(english_translations)
+
         return cls(
             word=word,
             word_class=facts.get("word_class"),
@@ -40,7 +45,8 @@ class Entry:
             level=facts.get("level"),
             pronunciation=facts.get("pronunciation"),
             plural=facts.get("plural"),
-            translations=cls.extract_translations(soup),
+            translations=english_translations,
+            translations_ru=russian_translations,
             conjugations=cls.extract_verb_conjugations(soup),
             sentences=cls.extract_example_sentences(soup),
         )
@@ -103,6 +109,29 @@ class Entry:
             for item in items
             if item.get_text(strip=True)
         ]
+
+    @staticmethod
+    def translate_to_russian(translations: list[str]) -> list[str]:
+        if not translations:
+            return []
+
+        try:
+            translator = GoogleTranslator(source="en", target="ru")
+            # Join all English terms into a single string: "result, outcome"
+            joined_english = ", ".join(translations)
+            
+            # Translate the entire joined string
+            translated_text = translator.translate(joined_english)
+            
+            # Split back into a list clean of extra whitespace
+            return [
+                item.strip()
+                for item in translated_text.split(",")
+                if item.strip()
+            ]
+        except Exception as e:
+            print(f"Warning: Russian translation failed: {e}", file=sys.stderr)
+            return []
 
     @staticmethod
     def extract_verb_conjugations(soup: BeautifulSoup) -> str | None:
@@ -172,6 +201,7 @@ class Entry:
             ", ".join(self.translations),
             self.conjugations or "",
             formatted_sentences,
+            ", ".join(self.translations_ru),  # Russian translations as the last field
         ]
 
         return separator.join(fields)
@@ -183,7 +213,7 @@ def parse_vocabeo_input(
     separator: str = "|",
     base_url: str = "https://vocabeo.com/browse/",
 ):
-    """Scrapes Vocabeo pages, prints the formatted data, and writes to a file."""
+    """Scrapes Vocabeo pages, translates terms to Russian, prints formatted data, and writes to a file."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -194,7 +224,6 @@ def parse_vocabeo_input(
                     path if path.startswith("http") else f"{base_url}{path}"
                 )
                 fallback_slug = path.split("/")[-1]
-                ##print(f"Loading page: {full_url}...", file=sys.stderr)
 
                 try:
                     page.goto(full_url, wait_until="networkidle")
@@ -204,10 +233,7 @@ def parse_vocabeo_input(
                     entry = Entry.from_soup(soup, fallback_word=fallback_slug)
                     line = entry.to_txt_line(separator=separator)
 
-                    # Save to file
                     file.write(line + "\n")
-                    
-                    # Print formatted string to stdout
                     print(line)
                 except Exception as e:
                     print(f"Error parsing {full_url}: {e}\n", file=sys.stderr)
