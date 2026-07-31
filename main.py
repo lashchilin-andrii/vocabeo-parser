@@ -2,9 +2,23 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass, field
+from enum import Enum
+
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 from playwright.sync_api import sync_playwright
+
+
+class PartOfSpeech(Enum):
+    NOUN = "noun"
+    VERB = "verb"
+    ADJECTIVE = "adj"
+    ADVERB = "adv"
+    PRONOUN = "pron"
+    PREPOSITION = "prep"
+    NUMBER = "num"
+    CONJUNCTION = "conj"
+    INTERJECTION = "inter"
 
 
 @dataclass
@@ -117,18 +131,25 @@ class Entry:
 
         try:
             translator = GoogleTranslator(source="en", target="ru")
-            # Join all English terms into a single string: "result, outcome"
             joined_english = ", ".join(translations)
-            
-            # Translate the entire joined string
             translated_text = translator.translate(joined_english)
-            
-            # Split back into a list clean of extra whitespace
-            return [
+
+            raw_items = [
                 item.strip()
                 for item in translated_text.split(",")
                 if item.strip()
             ]
+
+            # Удаляем дубликаты с сохранением порядка (без учета регистра)
+            seen = set()
+            unique_items = []
+            for item in raw_items:
+                item_lower = item.lower()
+                if item_lower not in seen:
+                    seen.add(item_lower)
+                    unique_items.append(item)
+
+            return unique_items
         except Exception as e:
             print(f"Warning: Russian translation failed: {e}", file=sys.stderr)
             return []
@@ -201,10 +222,32 @@ class Entry:
             ", ".join(self.translations),
             self.conjugations or "",
             formatted_sentences,
-            ", ".join(self.translations_ru),  # Russian translations as the last field
+            ", ".join(self.translations_ru),
         ]
 
         return separator.join(fields)
+
+
+def normalize_term(term: str) -> str:
+    cleaned = term.strip()
+
+    # Ищем артикли der/die/das, отделенные пробелом или тире
+    match = re.match(r"^(der|die|das)[\s-]+(.*)$", cleaned, flags=re.IGNORECASE)
+
+    if match:
+        article = match.group(1).lower()
+        word = match.group(2).strip()
+
+        # Заменяем пробелы внутри существительного на тире и капитализируем
+        word_parts = re.split(r"[\s_]+", word)
+        word_capitalized = "-".join(
+            [word_parts[0].capitalize()] + [w.lower() for w in word_parts[1:]]
+        )
+
+        return f"{article}-{word_capitalized}"
+    else:
+        # Для глаголов и других частей речи (например, "gehen" или "auf-stehen")
+        return re.sub(r"[\s_]+", "-", cleaned.lower())
 
 
 def parse_vocabeo_input(
@@ -213,55 +256,65 @@ def parse_vocabeo_input(
     separator: str = "|",
     base_url: str = "https://vocabeo.com/browse/",
 ):
-    """Scrapes Vocabeo pages, translates terms to Russian, prints formatted data, and writes to a file."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
         with open(output_file, "w", encoding="utf-8") as file:
-            for path in paths:
-                full_url = (
-                    path if path.startswith("http") else f"{base_url}{path}"
-                )
-                fallback_slug = path.split("/")[-1]
+            for raw_path in paths:
+                if "/" in raw_path and not raw_path.startswith("http"):
+                    targets = [f"{base_url}{raw_path.strip('/')}"]
+                    clean_slug = raw_path.split("/")[-1]
+                else:
+                    clean_slug = normalize_term(raw_path)
+                    targets = [
+                        f"{base_url}{pos.value}/{clean_slug}"
+                        for pos in PartOfSpeech
+                    ]
 
-                try:
-                    page.goto(full_url, wait_until="networkidle")
-                    rendered_html = page.content()
+                for url in targets:
+                    try:
+                        page.goto(url, wait_until="networkidle")
+                        soup = BeautifulSoup(page.content(), "html.parser")
 
-                    soup = BeautifulSoup(rendered_html, "html.parser")
-                    entry = Entry.from_soup(soup, fallback_word=fallback_slug)
-                    line = entry.to_txt_line(separator=separator)
+                        entry = Entry.from_soup(soup, fallback_word=clean_slug)
 
-                    file.write(line + "\n")
-                    print(line)
-                except Exception as e:
-                    print(f"Error parsing {full_url}: {e}\n", file=sys.stderr)
+                        if entry.word_class == "Article":
+                            continue
+
+                        line = entry.to_txt_line(separator=separator)
+
+                        file.write(line + "\n")
+                        file.flush()
+                        print(line)
+
+                    except Exception as e:
+                        print(f"Error parsing {url}: {e}\n", file=sys.stderr)
 
         browser.close()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scrape word data from Vocabeo and export to text format (Anki compatible)."
+        description="Blindly scrape word data from Vocabeo across all POS endpoints."
     )
 
     parser.add_argument(
         "paths",
         nargs="*",
-        help="Space or comma-separated list of word paths (e.g., adv/gerne adv/gleich noun/haus)",
+        help="Space or comma-separated list of word paths or terms",
     )
     parser.add_argument(
         "-o",
         "--output",
         default="vocabeo_words.txt",
-        help="Output text file path (default: vocabeo_words.txt)",
+        help="Output text file path",
     )
     parser.add_argument(
         "-s",
         "--separator",
         default="|",
-        help="Field separator character (default: '|')",
+        help="Field separator character",
     )
 
     args = parser.parse_args()
@@ -270,14 +323,20 @@ def main():
 
     if args.paths:
         raw_joined = " ".join(args.paths)
-        input_paths = [
-            p.strip() for p in raw_joined.replace(",", " ").split() if p.strip()
-        ]
+        # Разбиваем входные данные по запятым
+        raw_items = raw_joined.split(",")
+        for item in raw_items:
+            cleaned_item = item.strip()
+            if cleaned_item:
+                input_paths.append(cleaned_item)
+
     elif not sys.stdin.isatty():
         raw_input = sys.stdin.read()
-        input_paths = [
-            p.strip() for p in raw_input.replace(",", " ").split() if p.strip()
-        ]
+        raw_items = raw_input.split(",") if "," in raw_input else raw_input.splitlines()
+        for item in raw_items:
+            cleaned_item = item.strip()
+            if cleaned_item:
+                input_paths.append(cleaned_item)
 
     if not input_paths:
         parser.print_help()
@@ -286,7 +345,6 @@ def main():
     parse_vocabeo_input(
         paths=input_paths, output_file=args.output, separator=args.separator
     )
-
 
 if __name__ == "__main__":
     main()
