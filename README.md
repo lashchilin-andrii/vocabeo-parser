@@ -1,5 +1,5 @@
 # vocabeo-parser
 
 ```
-docker run --rm vocabeo-parser "der-Text, heute, noch" | xclip -selection clipboard
+docker run --rm vocabeo-parser "der Text, heute, noch" >> file.txt
 ```
