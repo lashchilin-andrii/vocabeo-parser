@@ -1,12 +1,17 @@
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
 
+import deepl
 from bs4 import BeautifulSoup
-from deep_translator import GoogleTranslator, MyMemoryTranslator
 from playwright.sync_api import sync_playwright
+
+# Инициализация клиента DeepL (укажите ваш API-ключ)
+DEEPL_AUTH_KEY = os.getenv("DEEPL_AUTH_KEY", "276b05c1-cae8-4445-a501-831a521abd8b:fx")
+deepl_client = deepl.DeepLClient(DEEPL_AUTH_KEY)
 
 
 class PartOfSpeech(Enum):
@@ -131,15 +136,15 @@ class Entry:
 
         joined_english = ", ".join(translations)
 
-        # Try Google first, fall back to MyMemory if blocked
         try:
-            translated_text = GoogleTranslator(source="en", target="ru").translate(joined_english)
-        except Exception:
-            try:
-                translated_text = MyMemoryTranslator(source="en-US", target="ru-RU").translate(joined_english)
-            except Exception as e:
-                print(f"Warning: Russian translation failed: {e}", file=sys.stderr)
-                return []
+            # Перевод через DeepL API (из EN в RU)
+            result = deepl_client.translate_text(
+                joined_english, source_lang="EN", target_lang="RU"
+            )
+            translated_text = result.text
+        except Exception as e:
+            print(f"Warning: Russian translation via DeepL failed: {e}", file=sys.stderr)
+            return []
 
         raw_items = [
             item.strip()
@@ -326,7 +331,6 @@ def main():
 
     if args.paths:
         raw_joined = " ".join(args.paths)
-        # Разбиваем входные данные по запятым
         raw_items = raw_joined.split(",")
         for item in raw_items:
             cleaned_item = item.strip()
