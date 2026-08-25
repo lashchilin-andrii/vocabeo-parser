@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from bs4 import BeautifulSoup
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 from playwright.sync_api import sync_playwright
 
 
@@ -129,30 +129,33 @@ class Entry:
         if not translations:
             return []
 
+        joined_english = ", ".join(translations)
+
+        # Try Google first, fall back to MyMemory if blocked
         try:
-            translator = GoogleTranslator(source="en", target="ru")
-            joined_english = ", ".join(translations)
-            translated_text = translator.translate(joined_english)
+            translated_text = GoogleTranslator(source="en", target="ru").translate(joined_english)
+        except Exception:
+            try:
+                translated_text = MyMemoryTranslator(source="en-US", target="ru-RU").translate(joined_english)
+            except Exception as e:
+                print(f"Warning: Russian translation failed: {e}", file=sys.stderr)
+                return []
 
-            raw_items = [
-                item.strip()
-                for item in translated_text.split(",")
-                if item.strip()
-            ]
+        raw_items = [
+            item.strip()
+            for item in translated_text.split(",")
+            if item.strip()
+        ]
 
-            # Удаляем дубликаты с сохранением порядка (без учета регистра)
-            seen = set()
-            unique_items = []
-            for item in raw_items:
-                item_lower = item.lower()
-                if item_lower not in seen:
-                    seen.add(item_lower)
-                    unique_items.append(item)
+        seen = set()
+        unique_items = []
+        for item in raw_items:
+            item_lower = item.lower()
+            if item_lower not in seen:
+                seen.add(item_lower)
+                unique_items.append(item)
 
-            return unique_items
-        except Exception as e:
-            print(f"Warning: Russian translation failed: {e}", file=sys.stderr)
-            return []
+        return unique_items
 
     @staticmethod
     def extract_verb_conjugations(soup: BeautifulSoup) -> str | None:
