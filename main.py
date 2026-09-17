@@ -109,7 +109,8 @@ class Entry:
                     result["level"] = emphasize.get_text(strip=True)
 
             elif text.startswith("[") and text.endswith("]"):
-                result["pronunciation"] = text
+                # Удаляем символ '|' из транскрипции, чтобы не ломать структуру текстового файла
+                result["pronunciation"] = text.replace("|", "")
 
         return result
 
