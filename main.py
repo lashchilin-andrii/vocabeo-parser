@@ -109,7 +109,6 @@ class Entry:
                     result["level"] = emphasize.get_text(strip=True)
 
             elif text.startswith("[") and text.endswith("]"):
-                # Удаляем символ '|' из транскрипции, чтобы не ломать структуру текстового файла
                 result["pronunciation"] = text.replace("|", "")
 
         return result
@@ -295,7 +294,7 @@ def parse_vocabeo_input(
 
                         file.write(line + "\n")
                         file.flush()
-                        print(line)
+                        print(line, end="\n\n")
 
                     except Exception as e:
                         print(f"Error parsing {url}: {e}\n", file=sys.stderr)
