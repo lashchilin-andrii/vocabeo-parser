@@ -45,6 +45,7 @@ class Entry:
     translations_ru: list[str] = field(default_factory=list)
     conjugations: str | None = None
     sentences: list[Sentence] = field(default_factory=list)
+    word_sound: str | None = None
 
     @classmethod
     def from_soup(cls, soup: BeautifulSoup, fallback_word: str) -> "Entry":
@@ -68,6 +69,7 @@ class Entry:
             translations_ru=russian_translations,
             conjugations=cls.extract_verb_conjugations(soup),
             sentences=cls.extract_example_sentences(soup),
+            word_sound=None,
         )
 
     @staticmethod
@@ -231,6 +233,7 @@ class Entry:
             self.conjugations or "",
             formatted_sentences,
             ", ".join(self.translations_ru),
+            self.word_sound or "",
         ]
 
         return separator.join(fields)
@@ -294,7 +297,8 @@ def parse_vocabeo_input(
 
                         file.write(line + "\n")
                         file.flush()
-                        print(line, end="\n\n")
+                        print()
+                        print(line)
 
                     except Exception as e:
                         print(f"Error parsing {url}: {e}\n", file=sys.stderr)
@@ -352,6 +356,7 @@ def main():
     parse_vocabeo_input(
         paths=input_paths, output_file=args.output, separator=args.separator
     )
+
 
 if __name__ == "__main__":
     main()
