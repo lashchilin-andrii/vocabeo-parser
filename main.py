@@ -3,15 +3,21 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 
 import deepl
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-# Инициализация клиента DeepL (укажите ваш API-ключ)
 DEEPL_AUTH_KEY = os.getenv("DEEPL_AUTH_KEY", "276b05c1-cae8-4445-a501-831a521abd8b:fx")
-deepl_client = deepl.DeepLClient(DEEPL_AUTH_KEY)
+deepl_client = deepl.DeepLClient(DEEPL_AUTH_KEY) if DEEPL_AUTH_KEY else None
+
+if deepl_client is None:
+    print(
+        "Warning: DEEPL_AUTH_KEY is not set, Russian translations will be skipped.",
+        file=sys.stderr,
+    )
 
 
 class PartOfSpeech(Enum):
@@ -133,13 +139,13 @@ class Entry:
 
     @staticmethod
     def translate_to_russian(translations: list[str]) -> list[str]:
-        if not translations:
+        if not translations or deepl_client is None:
             return []
 
         joined_english = ", ".join(translations)
 
         try:
-            # Перевод через DeepL API (из EN в RU)
+            # Translate via the DeepL API (EN -> RU)
             result = deepl_client.translate_text(
                 joined_english, source_lang="EN", target_lang="RU"
             )
@@ -242,14 +248,12 @@ class Entry:
 def normalize_term(term: str) -> str:
     cleaned = term.strip()
 
-    # Ищем артикли der/die/das, отделенные пробелом или тире
     match = re.match(r"^(der|die|das)[\s-]+(.*)$", cleaned, flags=re.IGNORECASE)
 
     if match:
         article = match.group(1).lower()
         word = match.group(2).strip()
 
-        # Заменяем пробелы внутри существительного на тире и капитализируем
         word_parts = re.split(r"[\s_]+", word)
         word_capitalized = "-".join(
             [word_parts[0].capitalize()] + [w.lower() for w in word_parts[1:]]
@@ -257,8 +261,33 @@ def normalize_term(term: str) -> str:
 
         return f"{article}-{word_capitalized}"
     else:
-        # Для глаголов и других частей речи (например, "gehen" или "auf-stehen")
         return re.sub(r"[\s_]+", "-", cleaned.lower())
+
+
+def get_app_dir() -> str:
+    """Folder containing the .exe (or the script itself when run from Python)."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_output_path(output: str | None) -> str:
+    """Without -o: vocabeo_words_YYYY-MM-DD_HH-MM-SS.txt next to the .exe.
+    With -o: a relative path is also resolved against the .exe folder."""
+    if not output:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output = f"vocabeo_words_{timestamp}.txt"
+    if not os.path.isabs(output):
+        output = os.path.join(get_app_dir(), output)
+    return output
+
+
+def launch_browser(p):
+    """Try Microsoft Edge (preinstalled on Windows), otherwise fall back to bundled Chromium."""
+    try:
+        return p.chromium.launch(channel="msedge", headless=True)
+    except Exception:
+        return p.chromium.launch(headless=True)
 
 
 def parse_vocabeo_input(
@@ -268,7 +297,7 @@ def parse_vocabeo_input(
     base_url: str = "https://vocabeo.com/browse/",
 ):
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = launch_browser(p)
         page = browser.new_page()
 
         with open(output_file, "w", encoding="utf-8") as file:
@@ -297,8 +326,7 @@ def parse_vocabeo_input(
 
                         file.write(line + "\n")
                         file.flush()
-                        print()
-                        print(line)
+                        print(entry.word, entry.word_class, entry.translations, sep=" | ", end="\n")
 
                     except Exception as e:
                         print(f"Error parsing {url}: {e}\n", file=sys.stderr)
@@ -319,8 +347,8 @@ def main():
     parser.add_argument(
         "-o",
         "--output",
-        default="vocabeo_words.txt",
-        help="Output text file path",
+        default=None,
+        help="Output text file path (default: vocabeo_words_<datetime>.txt next to the exe)",
     )
     parser.add_argument(
         "-s",
@@ -333,30 +361,41 @@ def main():
 
     input_paths = []
 
-    if args.paths:
-        raw_joined = " ".join(args.paths)
-        raw_items = raw_joined.split(",")
-        for item in raw_items:
-            cleaned_item = item.strip()
-            if cleaned_item:
-                input_paths.append(cleaned_item)
+    def add_items(raw: str):
+        items = raw.split(",") if "," in raw else raw.splitlines()
+        for item in items:
+            cleaned = item.strip()
+            if cleaned:
+                input_paths.append(cleaned)
 
+    if args.paths:
+        add_items(" ".join(args.paths))
     elif not sys.stdin.isatty():
-        raw_input = sys.stdin.read()
-        raw_items = raw_input.split(",") if "," in raw_input else raw_input.splitlines()
-        for item in raw_items:
-            cleaned_item = item.strip()
-            if cleaned_item:
-                input_paths.append(cleaned_item)
+        add_items(sys.stdin.read())
+    else:
+        print("Enter words separated by commas:", end="\n")
+        add_items(input("> "))
 
     if not input_paths:
         parser.print_help()
+        input("Press Enter to exit...")
         sys.exit(1)
 
+    output_path = resolve_output_path(args.output)
+
     parse_vocabeo_input(
-        paths=input_paths, output_file=args.output, separator=args.separator
+        paths=input_paths, output_file=output_path, separator=args.separator
     )
+
+    print(f"Done. Saved to {output_path}", end="\n")
+    if sys.stdin.isatty():
+        input("Press Enter to exit...")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"Fatal error: {e}", file=sys.stderr)
+        input("Press Enter to exit...")
+        sys.exit(1)
